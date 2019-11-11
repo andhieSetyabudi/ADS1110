@@ -1,0 +1,20 @@
+{
+    "name": "ADS1110",
+    "keywords": "i2c,wire,analog to digital, ADC",
+    "description": "Arduino library for zigma A/D converter ADS1110",
+    "repository":
+    {
+        "type": "git",
+        "url": "https://github.com/andhieSetyabudi/ADS1110.git"
+    },
+    "authors":
+    {
+        "name": "Andhie Setyabudi",
+        "url": "https://github.com/andhieSetyabudi",
+        "maintainer": true
+    },
+    "version": "v1.0",
+    "license": "MIT",
+    "frameworks": "arduino",
+    "platforms": "*"
+}
