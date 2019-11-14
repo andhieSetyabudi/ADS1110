@@ -37,23 +37,18 @@
  
 *==============================================================================================================*/
 
-#if 1
-__asm volatile ("nop");
-#endif
-
 #include "ADS1110.h"
 
 /*==============================================================================================================*
     CONSTRUCTOR
  *==============================================================================================================*/
 
-ADS1110::ADS1110(byte devAddr, TwoWire &line) 
+ADS1110::ADS1110(uint8_t address, TwoWire &line) 
 {
-    _devAddr   = devAddr;
+    _devAddr   = address;
     _config    = DEFAULT_CONFIG;
-    _vref      = INT_REF;
     _comBuffer = COM_SUCCESS;
-    driver=&line;
+    driver     = &line;
 }
 
 /*==============================================================================================================*
@@ -68,8 +63,9 @@ ADS1110::~ADS1110() {}
 
 // See explication of error codes in the README
 
-byte ADS1110::ping() {
+uint8_t ADS1110::ping() {
     driver->beginTransmission(_devAddr);
+    driver->write(_config);
     return driver->endTransmission();
 }
 
@@ -77,7 +73,7 @@ byte ADS1110::ping() {
     GET GAIN (1 = GAIN x1 / 2 = GAIN x2 / 4 = GAIN x4 / 8 = GAIN x8)
  *==============================================================================================================*/
 
-byte ADS1110::getGain() {
+uint8_t ADS1110::getGain() {
     return (1 << (_config & GAIN_MASK));
 }
 
@@ -85,7 +81,7 @@ byte ADS1110::getGain() {
     GET SAMPLE RATE (15 = 15 SPS / 30 = 30 SPS / 60 = 60 SPS / 240 = 240 SPS)
  *==============================================================================================================*/
 
-byte ADS1110::getSampleRate() {
+uint8_t ADS1110::getSampleRate() {
     switch (_config & SPS_MASK) {
         case (SPS_15):  return  15; break;
         case (SPS_30):  return  30; break;
@@ -98,7 +94,7 @@ byte ADS1110::getSampleRate() {
     GET CONVERSION MODE (0 = CONTINUOUS / 1 = SINGLE-SHOT)
  *==============================================================================================================*/
 
-byte ADS1110::getConMode() {
+uint8_t ADS1110::getConMode() {
     return bitRead(_config, 4);
 }
 
@@ -106,7 +102,7 @@ byte ADS1110::getConMode() {
     GET RESOLUTION (12 = 12-BIT / 14 = 14-BIT / 15 = 15-BIT / 16 = 16-BIT)
  *==============================================================================================================*/
 
-byte ADS1110::getRes() {
+uint8_t ADS1110::getRes() {
     switch (_config & SPS_MASK) {
         case (SPS_15):  return 16; break;
         case (SPS_30):  return 15; break;
@@ -160,13 +156,6 @@ void ADS1110::setRes(res_t newRes) {                             // PARAMS: 12_B
     }
 }
 
-/*==============================================================================================================*
-    SET VOLTAGE REFERENCE
- *==============================================================================================================*/
-
-void ADS1110::setVref(vref_t newVref) {                         // PARAMS: INT_REF / EXT_REF
-    _vref = newVref;
-}
 
 /*==============================================================================================================*
     RESET
@@ -174,7 +163,6 @@ void ADS1110::setVref(vref_t newVref) {                         // PARAMS: INT_R
 
 void ADS1110::reset() {
     setConfig(DEFAULT_CONFIG);
-    _vref = INT_REF;
 }
 
 /*==============================================================================================================*
@@ -182,28 +170,43 @@ void ADS1110::reset() {
  *==============================================================================================================*/
 
 int ADS1110::getData() {
-    byte devConfig;
+    uint8_t devConfig;
     int  devData;
-    byte attemptCount = 0;
+    uint8_t attemptCount = 0;
     if (bitRead(_config, 4)) {                                  // if device is in 'SINGLE-SHOT' mode...
-        initCall(_config | START_CONVERSION);                   // add start conversion command to config byte 
+        initCall(_config | START_CONVERSION);                   // add start conversion command to config uint8_t 
         endCall();                                              // issue start conversion command
         delay(MIN_CON_TIME * findMinCode(_config & SPS_MASK));  // wait for conversion to complete
     }
-    while (attemptCount < MAX_NUM_ATTEMPTS) {                   // make up to 3 attempts to get new data
-        driver->requestFrom(_devAddr, NUM_BYTES);                  // request 3 bytes from device
-        if (driver->available() == NUM_BYTES) {                    // if 3 bytes were recieved...
+    if (ping() != 0) return 0;
+    while (attemptCount < MAX_NUM_ATTEMPTS) 
+    {                   // make up to 3 attempts to get new data
+        driver->requestFrom(_devAddr, NUM_BYTES);                  // request 3 uint8_ts from device
+        if (driver->available() == NUM_BYTES) 
+        {                    // if 3 uint8_ts were recieved...
             devData = driver->read() << 8 | driver->read();           // read data register
+            //SerialUSB.println(devData);
             devConfig = driver->read();                            // read config register
             if (bitRead(devConfig, 7)) {                        // check if new data available...
                 delay(MIN_CON_TIME);                            // if not available yet, wait a bit longer
                 attemptCount++;                                 // increment attemps count
-            } else return devData;                              // if new data is available, return conversion result
-        } else {                                                // if 3 bytes were not recieved...
+            } else 
+            {
+                if (devData >= 32768) devData-= 65536;
+                return devData;                              // if new data is available, return conversion result
+            }
+        } else {                                                // if 3 uint8_ts were not recieved...
             emptyBuffer();                                      // empty I2C buffer
             _comBuffer = ping();                                // store I2C error code to find out what went wrong
             attemptCount = MAX_NUM_ATTEMPTS;                    // exit while loop
+            devData= 0;
         }
+    }
+    if (!bitRead(_config, 4)) 
+    {
+        _comBuffer = ping();
+        if (devData >= 32768) devData-= 65536;
+        return devData;  
     }
     return 0;                                                   // if operation unsuccessful, return 0
 }
@@ -219,17 +222,27 @@ int ADS1110::getData() {
     // Vin+ = 0 - 2048mV when Pin Vin- (=_Vref) is connected to GND
     // Vin+ = 0 - 4096mV when Pin Vin- (=_Vref) is connected to an external 2.048V reference source
 
-int ADS1110::getVolt() {
-    byte gain = (1 << (_config & GAIN_MASK));
-    byte minCode = findMinCode(_config & SPS_MASK);
-    return (round((float)getData() / (float)(minCode * gain)) + _vref);
+float ADS1110::getVolt() {
+    uint8_t gain = (1 << (_config & GAIN_MASK));
+    int minCode = (findMinCode(_config & SPS_MASK) << 11) * -1;
+    int dataADC = getData();
+    float voltage = ((float)dataADC*_vref / (float)(minCode * gain * (-1) )); 
+//    voltage *=100000.0f;
+//    voltage = (float)round(voltage)/10000.f;
+   //float voltage_ = 0;
+    //SerialUSB.println("data adc : "+String(dataADC));
+    //SerialUSB.println(" gain : "+String(gain));
+    //SerialUSB.println(" minCode : "+String(minCode));
+    //SerialUSB.println(" voltage : "+String(voltage,4));
+    
+    return voltage;
 }
 
 /*==============================================================================================================*
     GET PERCENTAGE (0-100%)
  *==============================================================================================================*/
 
-byte ADS1110::getPercent() {
+uint8_t ADS1110::getPercent() {
     int lowerLimit = (findMinCode(_config & SPS_MASK) << 11) * -1;
     int upperLimit = (findMinCode(_config & SPS_MASK) << 11) - 1;
     return round(mapf(getData(), lowerLimit, upperLimit, 0, 100));
@@ -239,7 +252,7 @@ byte ADS1110::getPercent() {
     GET COMMUNICATION RESULT
  *==============================================================================================================*/
 
-byte ADS1110::getComResult() {
+uint8_t ADS1110::getComResult() {
     return _comBuffer;
 }
 
@@ -247,24 +260,24 @@ byte ADS1110::getComResult() {
     GET CONFIGURATION SETTINGS (FROM DEVICE)
  *==============================================================================================================*/
 
-byte ADS1110::getConfig() {
-    byte devConfig;
-    driver->requestFrom(_devAddr, NUM_BYTES);              // request 3 bytes from device
-    if (driver->available() == NUM_BYTES) {                // if 3 bytes were recieved...
-        for (byte i=2; i>0; i--) driver->read();           // skip data register bytes
-        devConfig = driver->read();                        // store device config byte
-    } else {                                            // if 3 bytes were not recieved...
+uint8_t ADS1110::getConfig() {
+    uint8_t devConfig;
+    driver->requestFrom(_devAddr, NUM_BYTES);              // request 3 uint8_ts from device
+    if (driver->available() == NUM_BYTES) {                // if 3 uint8_ts were recieved...
+        for (uint8_t i=2; i>0; i--) driver->read();           // skip data register uint8_ts
+        devConfig = driver->read();                        // store device config uint8_t
+    } else {                                            // if 3 uint8_ts were not recieved...
         emptyBuffer();                                  // empty I2C buffer
         _comBuffer = ping();                            // store I2C error code to find out what went wrong
     }
-    return devConfig;                                   // return device config byte
+    return devConfig;                                   // return device config uint8_t
 }
 
 /*==============================================================================================================*
     SET CONFIGURATION REGISTER
  *==============================================================================================================*/
 
-void ADS1110::setConfig(byte newConfig) {
+void ADS1110::setConfig(uint8_t newConfig) {
     initCall(newConfig);
     endCall();
     if (_comBuffer == COM_SUCCESS) _config = newConfig;
@@ -274,7 +287,7 @@ void ADS1110::setConfig(byte newConfig) {
     FIND MINIMAL CODE (BASED ON SAMPLE RATE)
  *==============================================================================================================*/
 
-byte ADS1110::findMinCode(sample_rate_t sampleRate) {
+uint8_t ADS1110::findMinCode(uint8_t sampleRate) {
     switch (sampleRate) {
         case (SPS_15) : return MIN_CODE_15;  break;
         case (SPS_30) : return MIN_CODE_30;  break;
@@ -295,7 +308,7 @@ double ADS1110::mapf(double val, double in_min, double in_max, double out_min, d
     INITIATE I2C COMMUNICATION
  *==============================================================================================================*/
 
-void ADS1110::initCall(byte data) {
+void ADS1110::initCall(uint8_t data) {
     driver->beginTransmission(_devAddr);
     driver->write(data);
 }
